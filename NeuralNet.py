@@ -246,4 +246,4 @@ def generate_dataset(examples_count, dataset_type = 'moons'):
 #dimensions[0] should be the number of input features
 #dimensions[-1] should be 1 to signify the output layer
 #3.Train your model
-#model = train(X, Y, X_test, Y_test, 0.005, 10000, 200)
+#model = train(X, Y, X_test, Y_test, 0.005, 10000, 200, activations, dimensions)
