@@ -63,11 +63,11 @@ def activation_forward(Z, activation_type):
         A = tanh(Z)       
     return A
 
-def linear_backward(dZ, A_prev, W, regularization):
+def linear_backward(dZ, A_prev, W, lambd):
     #Function to compute gradients going from the linear component of a layer to the activation  component of the previous layer in backward propagation
     #m refers the number of samples
     m = dZ.shape[1]    
-    dW = (np.matmul(dZ, A_prev.T)/m) + (regularization * W / m)
+    dW = (np.matmul(dZ, A_prev.T)/m) + (lambd * W / m)
     db = np.sum(dZ, axis = 1, keepdims = True)/m
     dA_prev = np.matmul(W.T, dZ)
     return dW, db, dA_prev
@@ -96,7 +96,7 @@ def model_forward(X, parameters, activation_types):
     
     return A, Z
     
-def model_backward(Y, activation_types, A, Z, W, regularization):
+def model_backward(Y, activation_types, A, Z, W, lambd):
     #Function to complete a single backward propagation
     Layers = len(activation_types)
     dW = {}
@@ -106,7 +106,7 @@ def model_backward(Y, activation_types, A, Z, W, regularization):
     
     for i in reversed(range(1, Layers+1)):        
         dZ[i] = activation_backward(dA_prev, A[i], activation_types[i-1])        
-        dW[i], db[i], dA_prev = linear_backward(dZ[i], A[i-1], W[i], regularization)
+        dW[i], db[i], dA_prev = linear_backward(dZ[i], A[i-1], W[i], lambd)
         
     gradients = {'dW' : dW,
                  'db' : db}
@@ -120,13 +120,13 @@ def update_parameters(parameters, gradients, learning_rate):
         parameters['Biasses'][i] = parameters['Biasses'][i] - learning_rate * gradients['db'][i]        
     return parameters
 
-def compute_cost(A, Y, regularization, Weights):
+def compute_cost(A, Y, lambd, Weights):
     #Compute the cost from the predicted values and values from the dataset
     m = Y.shape[1]
     regularization_cost = 0
     for key in Weights:
         regularization_cost += np.sum(np.square(Weights[key]))
-    regularization_cost = (regularization * regularization_cost)/(2 * m)
+    regularization_cost = (lambd * regularization_cost)/(2 * m)
     Cost = (-(np.matmul(Y, np.log(A).T) + np.matmul((1 - Y), np.log(1 - A).T))/m) + regularization_cost
     Cost = np.squeeze(Cost)
     return Cost
@@ -145,23 +145,23 @@ def calculate_accuracy(Y, Y_predictions):
     #Function to calculate accuracy of predictions
     return 100 - np.mean(np.abs(Y_predictions - Y))*100
 
-def train(X_train, Y_train, X_test, Y_test, learning_rate, num_iterations, print_iteration, activation_types, layer_dimensions, regularization = 0):
+def train(X_train, Y_train, X_test, Y_test, learning_rate, num_iterations, print_iteration, activation_types, layer_dimensions, lambd = 0):
     #Function to train a model using hyperparameters, learning rate, number of iterations, activationa types and layer dimensions
     #Activation types defines the activation functions of each layer
     #Layer dimensions defines the sizes of the layers
     #Shape of X - (features, samples)
     #Shape of Y - (1, samples)
-    #Regularization is lambda, the hyperparameter for weight decay
+    #Lambd or lambda is the hyperparameter for weight decay regularization
     #lambda can be set to 0 to remove weight decay
     parameters = initialize_parameters(layer_dimensions)
     Costs = []
     for i in range(num_iterations):
         A, Z = model_forward(X_train, parameters, activation_types)
-        Cost = compute_cost(A[len(layer_dimensions)-1], Y_train, regularization, parameters['Weights'])
+        Cost = compute_cost(A[len(layer_dimensions)-1], Y_train, lambd, parameters['Weights'])
         if i != 0 and i % print_iteration == 0:
             Costs.append(Cost)
             print ("Cost after iteration %i: %f" %(i, Cost))     
-        gradients = model_backward(Y_train, activation_types, A, Z, parameters['Weights'], regularization)
+        gradients = model_backward(Y_train, activation_types, A, Z, parameters['Weights'], lambd)
         parameters = update_parameters(parameters, gradients, learning_rate)
     model = {'Learning Rate' : learning_rate,
              'Activations' : activation_types,
@@ -253,6 +253,7 @@ def generate_dataset(examples_count, dataset_type = 'moons'):
 #dimensions = [2, 20, 7, 5, 1]
 #dimensions[0] should be the number of input features
 #dimensions[-1] should be 1 to signify the output layer
+#3.Train your model with tuned hyperparameters leaning rate, number of iterations, activations, dimensions, lambda
 #model = train(X, Y, X_test, Y_test, 0.006, 10000, 500, activations, dimensions, 0.7)
 #4. Plot changing cost, original dataset and predicted labels
 #plot_cost(model['Costs'])
