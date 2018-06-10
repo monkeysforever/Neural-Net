@@ -35,21 +35,31 @@ def relu(Z):
     A[A <= 0] = 0
     return A
 
-def initialize_parameters(dimensions):
+def initialize_parameters(dimensions, initializer):
     #Function to initialize the parameters
     #Dimensions refers to the sizes of the layers of the neural net
+    #Initializer is the type of initialization
+    #'He' initialization is appropriate for relu layer
+    #'Xavier' initialization is appropriate for sigmoid or tanh layers
     Layers = len(dimensions)
     W = {}
-    b = {}
+    b = {}    
+    
     for l in range(1, Layers):
-        W[l] = np.random.randn(dimensions[l], dimensions[l-1])
+        if initializer == 'Random':
+            multiplier = 1
+        elif initializer == 'He':
+            multiplier = np.sqrt(2/dimensions[l-1])
+        elif initializer == 'Xavier':
+            multiplier = np.sqrt(1/dimensions[l-1])
+        W[l] = np.random.randn(dimensions[l], dimensions[l-1]) * multiplier
         b[l] = np.zeros((dimensions[l], 1))
     parameters = {'Weights' : W,
                   'Biasses' : b}
     return parameters
 
 def linear_forward(X, W, b):
-    #Function to compute the linear component of a layer during forward propagation
+    #Function to compute the linear component of a layer during forward propagation    
     Z = np.matmul(W, X) + b   
     return Z
 
@@ -60,16 +70,20 @@ def activation_forward(Z, activation_type):
     elif activation_type == 'relu':
         A = relu(Z)       
     elif activation_type == 'tanh':
-        A = tanh(Z)       
+        A = tanh(Z)
+    
     return A
 
-def linear_backward(dZ, A_prev, W, lambd):
+def linear_backward(dZ, A_prev, W, lambd, D, probability, layer):
     #Function to compute gradients going from the linear component of a layer to the activation  component of the previous layer in backward propagation
     #m refers the number of samples
     m = dZ.shape[1]    
     dW = (np.matmul(dZ, A_prev.T)/m) + (lambd * W / m)
     db = np.sum(dZ, axis = 1, keepdims = True)/m
     dA_prev = np.matmul(W.T, dZ)
+    if layer != 1:
+        dA_prev = np.multiply(dA_prev, D[layer - 1])
+        dA_prev = dA_prev/probability
     return dW, db, dA_prev
 
 def activation_backward(dA, A, activation_type):
@@ -82,21 +96,25 @@ def activation_backward(dA, A, activation_type):
         A = 1 - np.square(A)    
     return np.multiply(dA, A)
 
-def model_forward(X, parameters, activation_types):
+def model_forward(X, parameters, activation_types, dropout_probabilities):
     #Function to complete a single forward propagation
     W = parameters['Weights']
     b = parameters['Biasses']
     Z = {}
     A = {}
+    D = {}
     A[0] = X
-    Layers = len(W)
-    for i in range(1, Layers+1):
-        Z[i] = linear_forward(A[i-1], W[i], b[i])       
-        A[i] = activation_forward(Z[i], activation_types[i-1])    
+    Layers = len(W)     
+    for i in range(1, Layers+1):        
+        Z[i] = linear_forward(A[i-1], W[i], b[i])        
+        A[i] = activation_forward(Z[i], activation_types[i-1])
+        D[i] = np.random.rand(A[i].shape[0], A[i].shape[1])
+        D[i] = (D[i] < dropout_probabilities[i-1]).astype(int)
+        A[i] = np.multiply(A[i], D[i])
+        A[i] = A[i]/dropout_probabilities[i-1]
+    return A, Z, D
     
-    return A, Z
-    
-def model_backward(Y, activation_types, A, Z, W, lambd):
+def model_backward(Y, activation_types, A, Z, W, lambd, D, dropout_probabilities):
     #Function to complete a single backward propagation
     Layers = len(activation_types)
     dW = {}
@@ -106,7 +124,7 @@ def model_backward(Y, activation_types, A, Z, W, lambd):
     
     for i in reversed(range(1, Layers+1)):        
         dZ[i] = activation_backward(dA_prev, A[i], activation_types[i-1])        
-        dW[i], db[i], dA_prev = linear_backward(dZ[i], A[i-1], W[i], lambd)
+        dW[i], db[i], dA_prev = linear_backward(dZ[i], A[i-1], W[i], lambd, D, dropout_probabilities[i-1], i)
         
     gradients = {'dW' : dW,
                  'db' : db}
@@ -136,8 +154,9 @@ def predict(X, model):
     parameters = model['Parameters']
     layers = len(parameters['Weights'])   
     activation_types = model['Activations']
-    A, Z = model_forward(X, parameters, activation_types)    
-    predictions = A[layers]    
+    dropout_probabilities = [1] * layers
+    A, Z, D = model_forward(X, parameters, activation_types, dropout_probabilities)    
+    predictions = A[layers]  
     predictions = (predictions>0.5).astype(int)        
     return predictions
 
@@ -145,7 +164,7 @@ def calculate_accuracy(Y, Y_predictions):
     #Function to calculate accuracy of predictions
     return 100 - np.mean(np.abs(Y_predictions - Y))*100
 
-def train(X_train, Y_train, X_test, Y_test, learning_rate, num_iterations, print_iteration, activation_types, layer_dimensions, lambd = 0):
+def train(X_train, Y_train, X_test, Y_test, learning_rate, num_iterations, print_iteration, activation_types, layer_dimensions, dropout_probabilities = None, lambd = 0, initializer = 'Random'):
     #Function to train a model using hyperparameters, learning rate, number of iterations, activationa types and layer dimensions
     #Activation types defines the activation functions of each layer
     #Layer dimensions defines the sizes of the layers
@@ -153,15 +172,21 @@ def train(X_train, Y_train, X_test, Y_test, learning_rate, num_iterations, print
     #Shape of Y - (1, samples)
     #Lambd or lambda is the hyperparameter for weight decay regularization
     #lambda can be set to 0 to remove weight decay
-    parameters = initialize_parameters(layer_dimensions)
+    #Dropout_probabities refers to the list of probabilities to keep a neuron in a layer active
+    #Dropout cannot be applied to the output layer or input layer, so the size of the list will be size of activations - 1
+    parameters = initialize_parameters(layer_dimensions, initializer)
     Costs = []
+    if dropout_probabilities == None:
+        dropout_probabilities = [1] * (len(layer_dimensions)-2)
+    #We append 1 as a probability for the output layer, i.e, no neuron in output layer must be dropped
+    dropout_probabilities.append(1)
     for i in range(num_iterations):
-        A, Z = model_forward(X_train, parameters, activation_types)
+        A, Z, D = model_forward(X_train, parameters, activation_types, dropout_probabilities)        
         Cost = compute_cost(A[len(layer_dimensions)-1], Y_train, lambd, parameters['Weights'])
         if i != 0 and i % print_iteration == 0:
             Costs.append(Cost)
             print ("Cost after iteration %i: %f" %(i, Cost))     
-        gradients = model_backward(Y_train, activation_types, A, Z, parameters['Weights'], lambd)
+        gradients = model_backward(Y_train, activation_types, A, Z, parameters['Weights'], lambd, D, dropout_probabilities)
         parameters = update_parameters(parameters, gradients, learning_rate)
     model = {'Learning Rate' : learning_rate,
              'Activations' : activation_types,
@@ -250,13 +275,15 @@ def generate_dataset(examples_count, dataset_type = 'moons'):
 #X, X_test, Y, Y_test = generate_dataset(10000, 'circles')
 #2.Set the layer sizes and activations
 #activations = ['relu', 'relu', 'relu', 'sigmoid']
-#dimensions = [2, 20, 7, 5, 1]
+#dimensions = [2, 20,5,7, 1]
 #dimensions[0] should be the number of input features
 #dimensions[-1] should be 1 to signify the output layer
-#3.Train your model with tuned hyperparameters leaning rate, number of iterations, activations, dimensions, lambda
-#model = train(X, Y, X_test, Y_test, 0.006, 10000, 500, activations, dimensions, 0.7)
+#3.Train your model with tuned hyperparameters leaning rate, number of iterations, activations, dimensions, lambda, dropout probabilties and initializer
+#model = train(X, Y, X_test, Y_test, 0.006, 10000, 500, activations, dimensions, initializer = 'Xavier')
 #4. Plot changing cost, original dataset and predicted labels
 #plot_cost(model['Costs'])
 #plot_dataset(X, Y)
 #plot_dataset(X, model['Training Predictions'])
-
+#print the test and training accuracy
+#print(model['Training Accuracy'])
+#print(model['Test Accuracy'])
