@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 The program performs classification on datasets generated using sklearn as well as a image dataset provided via kaggle through a neural network.
-The user can define the layers of the neural network with respect to various activations and layer sizes. 
+The user can define the layers of the neural network with respect to various activations and layer sizes.
 
 @author: Randeep
 """
@@ -15,9 +15,10 @@ from random import shuffle
 from matplotlib import pyplot
 from pandas import DataFrame
 from sklearn.datasets import make_moons, make_circles, make_blobs
+import math
 
 #Ratio to split data into training and test sets
-SPLIT_RATIO = 60
+SPLIT_RATIO = 80
 
 def sigmoid(Z):
     #Sigmoid activation function
@@ -44,8 +45,11 @@ def initialize_parameters(dimensions, initializer):
     Layers = len(dimensions)
     W = {}
     b = {}    
-    
+    Vdw = {}
+    Vdb = {}
     for l in range(1, Layers):
+        Vdw[l] = np.zeros((dimensions[l], dimensions[l - 1]))
+        Vdb[l] = np.zeros((dimensions[l], 1))
         if initializer == 'Random':
             multiplier = 1
         elif initializer == 'He':
@@ -56,7 +60,7 @@ def initialize_parameters(dimensions, initializer):
         b[l] = np.zeros((dimensions[l], 1))
     parameters = {'Weights' : W,
                   'Biasses' : b}
-    return parameters
+    return parameters, Vdw, Vdb
 
 def linear_forward(X, W, b):
     #Function to compute the linear component of a layer during forward propagation    
@@ -130,12 +134,16 @@ def model_backward(Y, activation_types, A, Z, W, lambd, D, dropout_probabilities
                  'db' : db}
     return gradients
 
-def update_parameters(parameters, gradients, learning_rate):
+def update_parameters(parameters, gradients, learning_rate, Vdw, Vdb, beta):
     #Function to update Weights and Biasses using gradients computed during backward propagation
-    Layers = len(parameters['Weights'])    
-    for i in range(1, Layers + 1):         
-        parameters['Weights'][i] = parameters['Weights'][i] - learning_rate * gradients['dW'][i]
-        parameters['Biasses'][i] = parameters['Biasses'][i] - learning_rate * gradients['db'][i]        
+    #beta is the hyperparameter for momentum optimization
+    #Vdw and Vdb are used for momentum optimization
+    Layers = len(parameters['Weights'])
+    for i in range(1, Layers + 1):
+        Vdw[i] = beta * Vdw[i] + ((1 - beta) * gradients['dW'][i])
+        Vdb[i] = beta * Vdb[i] + ((1 - beta) * gradients['db'][i])
+        parameters['Weights'][i] = parameters['Weights'][i] - learning_rate * Vdw[i]
+        parameters['Biasses'][i] = parameters['Biasses'][i] - learning_rate * Vdb[i]        
     return parameters
 
 def compute_cost(A, Y, lambd, Weights):
@@ -164,7 +172,7 @@ def calculate_accuracy(Y, Y_predictions):
     #Function to calculate accuracy of predictions
     return 100 - np.mean(np.abs(Y_predictions - Y))*100
 
-def train(X_train, Y_train, X_test, Y_test, learning_rate, num_iterations, print_iteration, activation_types, layer_dimensions, dropout_probabilities = None, lambd = 0, initializer = 'Random'):
+def train(X_train, Y_train, X_test, Y_test, learning_rate, num_iterations, print_iteration, activation_types, layer_dimensions, dropout_probabilities = None, lambd = 0, initializer = 'Random', batch_size = None, beta = 0):
     #Function to train a model using hyperparameters, learning rate, number of iterations, activationa types and layer dimensions
     #Activation types defines the activation functions of each layer
     #Layer dimensions defines the sizes of the layers
@@ -174,20 +182,29 @@ def train(X_train, Y_train, X_test, Y_test, learning_rate, num_iterations, print
     #lambda can be set to 0 to remove weight decay
     #Dropout_probabities refers to the list of probabilities to keep a neuron in a layer active
     #Dropout cannot be applied to the output layer or input layer, so the size of the list will be size of activations - 1
-    parameters = initialize_parameters(layer_dimensions, initializer)
+    #Beta is the hyperparameter for momentum
+    #Set batch size to 1 for stochastic gradient descent or to size of your dataset for gradient descent. Setting batch size to 64 or higher powers of 2
+    #is recommend for minibatch gradient descent
+    #Added for dimnesions of input layer
+    layer_dimensions.insert(0, X_train.shape[0])
+    parameters, Vdw, Vdb = initialize_parameters(layer_dimensions, initializer)
     Costs = []
     if dropout_probabilities == None:
         dropout_probabilities = [1] * (len(layer_dimensions)-2)
     #We append 1 as a probability for the output layer, i.e, no neuron in output layer must be dropped
     dropout_probabilities.append(1)
+    if batch_size == None:
+        batch_size = X_train.shape[1]         
     for i in range(num_iterations):
-        A, Z, D = model_forward(X_train, parameters, activation_types, dropout_probabilities)        
-        Cost = compute_cost(A[len(layer_dimensions)-1], Y_train, lambd, parameters['Weights'])
-        if i != 0 and i % print_iteration == 0:
-            Costs.append(Cost)
-            print ("Cost after iteration %i: %f" %(i, Cost))     
-        gradients = model_backward(Y_train, activation_types, A, Z, parameters['Weights'], lambd, D, dropout_probabilities)
-        parameters = update_parameters(parameters, gradients, learning_rate)
+        for X, Y in create_batches(X_train, Y_train, batch_size):            
+            A, Z, D = model_forward(X, parameters, activation_types, dropout_probabilities)        
+            Cost = compute_cost(A[len(layer_dimensions)-1], Y, lambd, parameters['Weights'])                 
+            gradients = model_backward(Y, activation_types, A, Z, parameters['Weights'], lambd, D, dropout_probabilities)
+            parameters = update_parameters(parameters, gradients, learning_rate, Vdw, Vdb, beta)
+            if i != 0 and i % print_iteration == 0:
+                Costs.append(Cost)
+        if i != 0 and i % print_iteration == 0:            
+            print ("Cost for %i iteration : %f" %(i, Cost))
     model = {'Learning Rate' : learning_rate,
              'Activations' : activation_types,
              'Layer Sizes' : layer_dimensions,
@@ -201,8 +218,7 @@ def train(X_train, Y_train, X_test, Y_test, learning_rate, num_iterations, print
     model['Test Accuracy'] = test_accuracy
     model['Training Accuracy'] = train_accuracy
     model['Training Predictions'] = Y_train_predictions
-    model['Test Predictions'] = Y_test_predictions
-    
+    model['Test Predictions'] = Y_test_predictions   
     return model
 
 def load_images(file_path, file_count, image_size):
@@ -269,17 +285,37 @@ def generate_dataset(examples_count, dataset_type = 'moons'):
     X_training, X_test, Y_training, Y_test = X[:, training_idx], X[:, test_idx], y[:, training_idx], y[:, test_idx]    
     return X_training, X_test, Y_training, Y_test
 
+def create_batches(X, Y, batch_size):
+    m =  X.shape[1]
+    batches = []    
+    permutations = np.random.permutation(m)
+    Shuffled_X = X[:, permutations]
+    Shuffled_Y = Y[:, permutations]
+    n = math.floor(m/batch_size)    
+    for i in range(n):
+        x = Shuffled_X[:, i * batch_size: (i + 1) * batch_size]
+        y = Shuffled_Y[:, i * batch_size: (i + 1) * batch_size]        
+        batch = (x, y)        
+        batches.append(batch)    
+    if m % batch_size != 0:
+        index = (batch_size * n)
+        x = X[:, index :]
+        y = Y[:, index :]
+        batch =(x, y)        
+        batches.append(batch)
+    return batches
+
 #$teps to classify
 
 #1.Generate dataset using generate_dataset or load_images
 #X, X_test, Y, Y_test = generate_dataset(10000, 'circles')
+#X, Y, X_test, Y_test = load_images('F:/train', 10000, 100)
 #2.Set the layer sizes and activations
 #activations = ['relu', 'relu', 'relu', 'sigmoid']
-#dimensions = [2, 20,5,7, 1]
-#dimensions[0] should be the number of input features
+#dimensions = [20, 5, 7, 1]
 #dimensions[-1] should be 1 to signify the output layer
 #3.Train your model with tuned hyperparameters leaning rate, number of iterations, activations, dimensions, lambda, dropout probabilties and initializer
-#model = train(X, Y, X_test, Y_test, 0.006, 10000, 500, activations, dimensions, initializer = 'Xavier')
+#model = train(X, Y, X_test, Y_test, 0.006, 500, 50, activations, dimensions, initializer = 'Xavier', batch_size = 256, beta = 0.9)
 #4. Plot changing cost, original dataset and predicted labels
 #plot_cost(model['Costs'])
 #plot_dataset(X, Y)
